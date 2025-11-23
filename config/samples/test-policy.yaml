@@ -9,10 +9,10 @@ spec:
   checkInterval: "10s"
   triggers:
     - name: "always-fire-test"
-      query: "vector(100)"   # 常に100を返すテスト用クエリ
+      query: 'sum(container_memory_usage_bytes{pod=~"demo-.*", namespace="default"}) by (pod)'
       operator: ">"
-      threshold: "50"
+      threshold: "0"
   pipeline:
     - name: "kill-pod"
-      action: "DeletePod"    # Podを削除するアクション
-  cooldownPeriod: "1m"       # 1分間は再発動しない
+      action: "DeletePod"
+  cooldownPeriod: "1m"

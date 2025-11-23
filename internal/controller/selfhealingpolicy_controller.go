@@ -270,12 +270,14 @@ func (r *SelfHealingPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 	r.PromAPI = promv1.NewAPI(client)
 
-	// 2. Register Actions (Extensibility Point!)
+	// 2. Register Actions
 	r.ActionRegistry = map[string]ActionFunc{
 		"DeletePod":  actionDeletePod,
 		"CordonNode": actionCordonNode,
 		// Add more actions here later (e.g., RollbackDeployment)
 	}
+
+	r.Recorder = mgr.GetEventRecorderFor("selfhealingpolicy-controller")
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&healingv1.SelfHealingPolicy{}).

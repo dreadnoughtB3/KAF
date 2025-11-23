@@ -1,0 +1,18 @@
+﻿apiVersion: healing.kaf.io/v1
+kind: SelfHealingPolicy
+metadata:
+  name: test-healing
+spec:
+  target:
+    matchLabels:
+      app: demo
+  checkInterval: "10s"
+  triggers:
+    - name: "always-fire-test"
+      query: "vector(100)"   # 常に100を返すテスト用クエリ
+      operator: ">"
+      threshold: "50"
+  pipeline:
+    - name: "kill-pod"
+      action: "DeletePod"    # Podを削除するアクション
+  cooldownPeriod: "1m"       # 1分間は再発動しない

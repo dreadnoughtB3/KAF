@@ -1,0 +1,9 @@
+apiVersion: healing.kaf.io/v1
+kind: SelfHealingPolicy
+metadata:
+  labels:
+    app.kubernetes.io/name: kaf
+    app.kubernetes.io/managed-by: kustomize
+  name: selfhealingpolicy-sample
+spec:
+  # TODO(user): Add fields here

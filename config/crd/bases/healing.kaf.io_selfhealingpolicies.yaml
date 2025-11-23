@@ -1,0 +1,210 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: selfhealingpolicies.healing.kaf.io
+spec:
+  group: healing.kaf.io
+  names:
+    kind: SelfHealingPolicy
+    listKind: SelfHealingPolicyList
+    plural: selfhealingpolicies
+    singular: selfhealingpolicy
+  scope: Namespaced
+  versions:
+  - name: v1
+    schema:
+      openAPIV3Schema:
+        description: SelfHealingPolicy is the Schema for the selfhealingpolicies API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: SelfHealingPolicySpec defines the desired state of SelfHealingPolicy
+            properties:
+              checkInterval:
+                default: 15s
+                description: |-
+                  CheckInterval determines how often to query Prometheus
+                  Default: "15s"
+                type: string
+              cooldownPeriod:
+                default: 5m
+                description: CooldownPeriod is the time to wait after a healing pipeline
+                  execution before resuming monitoring
+                type: string
+              pipeline:
+                description: Pipeline is the ordered list of recovery actions
+                items:
+                  description: RecoveryStep defines a single action in the recovery
+                    pipeline
+                  properties:
+                    action:
+                      description: Action type to perform
+                      enum:
+                      - DeletePod
+                      - CordonNode
+                      - DrainNode
+                      - RollbackDeployment
+                      - Command
+                      type: string
+                    name:
+                      description: Name of the step
+                      type: string
+                    params:
+                      additionalProperties:
+                        type: string
+                      description: |-
+                        Params are optional parameters for the action
+                        Example: {"force": "true", "gracePeriod": "0"}
+                      type: object
+                  required:
+                  - action
+                  - name
+                  type: object
+                type: array
+              target:
+                description: Target selects the pods to be monitored and healed
+                properties:
+                  matchExpressions:
+                    description: matchExpressions is a list of label selector requirements.
+                      The requirements are ANDed.
+                    items:
+                      description: |-
+                        A label selector requirement is a selector that contains values, a key, and an operator that
+                        relates the key and values.
+                      properties:
+                        key:
+                          description: key is the label key that the selector applies
+                            to.
+                          type: string
+                        operator:
+                          description: |-
+                            operator represents a key's relationship to a set of values.
+                            Valid operators are In, NotIn, Exists and DoesNotExist.
+                          type: string
+                        values:
+                          description: |-
+                            values is an array of string values. If the operator is In or NotIn,
+                            the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                            the values array must be empty. This array is replaced during a strategic
+                            merge patch.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      required:
+                      - key
+                      - operator
+                      type: object
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  matchLabels:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                      map is equivalent to an element of matchExpressions, whose key field is "key", the
+                      operator is "In", and the values array contains only "value". The requirements are ANDed.
+                    type: object
+                type: object
+                x-kubernetes-map-type: atomic
+              triggerLogic:
+                default: OR
+                description: TriggerLogic determines how multiple triggers are combined
+                enum:
+                - OR
+                - AND
+                type: string
+              triggers:
+                description: Triggers is a list of conditions that activate the healing
+                  pipeline
+                items:
+                  description: TriggerRule defines a specific condition based on a
+                    Prometheus query
+                  properties:
+                    for:
+                      description: |-
+                        For specifies how long the condition must be true before triggering
+                        Example: "1m", "30s"
+                      type: string
+                    name:
+                      description: Name of the rule for logging and status identification
+                      type: string
+                    operator:
+                      description: Operator for comparison
+                      enum:
+                      - '>'
+                      - <
+                      - ==
+                      - '>='
+                      - <=
+                      type: string
+                    query:
+                      description: |-
+                        Query is the PromQL query to execute. It should return a vector or scalar.
+                        Example: rate(tetragon_events_total{event_type="execve"}[1m])
+                      type: string
+                    threshold:
+                      description: |-
+                        Threshold value to compare against the query result
+                        We use string to avoid float precision issues and allow parsing in controller
+                        Example: "50", "0.5"
+                      type: string
+                  required:
+                  - name
+                  - operator
+                  - query
+                  - threshold
+                  type: object
+                type: array
+            required:
+            - pipeline
+            - target
+            - triggers
+            type: object
+          status:
+            description: SelfHealingPolicyStatus defines the observed state of SelfHealingPolicy
+            properties:
+              currentPipelineStep:
+                description: CurrentPipelineStep indicates which step is currently
+                  running (if Phase is Healing)
+                type: string
+              lastExecutionTime:
+                description: LastExecutionTime is when the pipeline last ran
+                format: date-time
+                type: string
+              phase:
+                description: Phase describes the current state of the policy
+                enum:
+                - Healthy
+                - Detecting
+                - Healing
+                - Cooldown
+                type: string
+              triggeredRule:
+                description: TriggeredRule records which rule caused the healing
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

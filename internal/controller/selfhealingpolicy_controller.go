@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -243,16 +244,66 @@ func actionDeletePod(ctx context.Context, r *SelfHealingPolicyReconciler, pod co
 }
 
 func actionCordonNode(ctx context.Context, r *SelfHealingPolicyReconciler, pod corev1.Pod, params map[string]string) error {
-	// Need to fetch Node
+	logger := log.FromContext(ctx)
+
+	nodeName := pod.Spec.NodeName
+	if nodeName == "" {
+		return fmt.Errorf("pod is not scheduled on any node")
+	}
+
 	var node corev1.Node
-	if err := r.Get(ctx, client.ObjectKey{Name: pod.Spec.NodeName}, &node); err != nil {
+	if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, &node); err != nil {
 		return err
 	}
 
-	// Create patch to set Unschedulable
+	// 既にCordonされていたら何もしない
+	if node.Spec.Unschedulable {
+		logger.Info("Node is already cordoned", "node", nodeName)
+		return nil
+	}
+
+	// パッチを作成して適用
 	patch := client.MergeFrom(node.DeepCopy())
 	node.Spec.Unschedulable = true
-	return r.Patch(ctx, &node, patch)
+	if err := r.Patch(ctx, &node, patch); err != nil {
+		return err
+	}
+
+	logger.Info("Node cordoned successfully", "node", nodeName)
+	return nil
+}
+
+// Action: RollingRestart
+// DeploymentのPodTemplateにアノテーションを付与して、全Podの再作成をトリガーする
+func actionRollingRestart(ctx context.Context, r *SelfHealingPolicyReconciler, pod corev1.Pod, params map[string]string) error {
+	logger := log.FromContext(ctx)
+
+	// PodのラベルからDeploymentを特定（簡易実装）
+	appName, ok := pod.Labels["app"]
+	if !ok {
+		return fmt.Errorf("pod has no 'app' label")
+	}
+	var deployList appsv1.DeploymentList
+	if err := r.List(ctx, &deployList, client.InNamespace(pod.Namespace), client.MatchingLabels{"app": appName}); err != nil {
+		return err
+	}
+	if len(deployList.Items) == 0 {
+		return fmt.Errorf("no deployment found")
+	}
+	deployment := deployList.Items[0]
+
+	// アノテーション "kubectl.kubernetes.io/restartedAt" を更新してRolloutを強制
+	patch := client.MergeFrom(deployment.DeepCopy())
+	if deployment.Spec.Template.Annotations == nil {
+		deployment.Spec.Template.Annotations = make(map[string]string)
+	}
+	deployment.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = time.Now().Format(time.RFC3339)
+
+	if err := r.Patch(ctx, &deployment, patch); err != nil {
+		return err
+	}
+	logger.Info("Triggered Rolling Restart", "deployment", deployment.Name)
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -272,8 +323,9 @@ func (r *SelfHealingPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	// 2. Register Actions
 	r.ActionRegistry = map[string]ActionFunc{
-		"DeletePod":  actionDeletePod,
-		"CordonNode": actionCordonNode,
+		"DeletePod":      actionDeletePod,
+		"CordonNode":     actionCordonNode,
+		"RollingRestart": actionRollingRestart,
 		// Add more actions here later (e.g., RollbackDeployment)
 	}
 

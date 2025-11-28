@@ -14,7 +14,20 @@ spec:
     singular: selfhealingpolicy
   scope: Namespaced
   versions:
-  - name: v1
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.triggeredRule
+      name: Triggered Rule
+      type: string
+    - jsonPath: .status.lastExecutionTime
+      name: Last Execution
+      type: date
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1
     schema:
       openAPIV3Schema:
         description: SelfHealingPolicy is the Schema for the selfhealingpolicies API
@@ -44,26 +57,35 @@ spec:
                 description: |-
                   CheckInterval determines how often to query Prometheus
                   Default: "15s"
+                pattern: ^[0-9]+(s|m|h)$
                 type: string
               cooldownPeriod:
                 default: 5m
-                description: CooldownPeriod is the time to wait after a healing pipeline
-                  execution before resuming monitoring
+                description: |-
+                  CooldownPeriod is the time to wait after a healing pipeline execution
+                  before resuming monitoring. This prevents healing loops.
+                  Default: "5m"
+                pattern: ^[0-9]+(s|m|h)$
                 type: string
               pipeline:
-                description: Pipeline is the ordered list of recovery actions
+                description: |-
+                  Pipeline is the ordered list of recovery actions
+                  Actions are executed sequentially
                 items:
                   description: RecoveryStep defines a single action in the recovery
                     pipeline
                   properties:
                     action:
-                      description: Action type to perform
+                      description: |-
+                        Action type to perform
+                        Available actions:
+                          - DeletePod: Delete the affected pod (ReplicaSet will recreate it)
+                          - CordonNode: Mark the node as unschedulable
+                          - RollingRestart: Trigger a rolling restart of the deployment
                       enum:
                       - DeletePod
                       - CordonNode
-                      - DrainNode
-                      - RollbackDeployment
-                      - Command
+                      - RollingRestart
                       type: string
                     name:
                       description: Name of the step
@@ -73,15 +95,23 @@ spec:
                         type: string
                       description: |-
                         Params are optional parameters for the action
-                        Example: {"force": "true", "gracePeriod": "0"}
+                        For DeletePod:
+                          - gracePeriod: Grace period in seconds (default: 0 for immediate deletion)
+                        Example: {"gracePeriod": "30"}
                       type: object
                   required:
                   - action
                   - name
                   type: object
+                minItems: 1
                 type: array
               target:
-                description: Target selects the pods to be monitored and healed
+                description: |-
+                  Target selects the pods to be monitored and healed
+                  Uses standard Kubernetes label selector syntax
+                  Example:
+                    matchLabels:
+                      app: frontend
                 properties:
                   matchExpressions:
                     description: matchExpressions is a list of label selector requirements.
@@ -128,14 +158,18 @@ spec:
                 x-kubernetes-map-type: atomic
               triggerLogic:
                 default: OR
-                description: TriggerLogic determines how multiple triggers are combined
+                description: |-
+                  TriggerLogic determines how multiple triggers are combined
+                  - OR: Any trigger matching will activate healing (default)
+                  - AND: All triggers must match to activate healing
                 enum:
                 - OR
                 - AND
                 type: string
               triggers:
-                description: Triggers is a list of conditions that activate the healing
-                  pipeline
+                description: |-
+                  Triggers is a list of conditions that activate the healing pipeline
+                  At least one trigger must be defined
                 items:
                   description: TriggerRule defines a specific condition based on a
                     Prometheus query
@@ -143,7 +177,9 @@ spec:
                     for:
                       description: |-
                         For specifies how long the condition must be true before triggering
-                        Example: "1m", "30s"
+                        This prevents flapping and false positives from temporary spikes
+                        Example: "1m", "30s", "2m"
+                      pattern: ^[0-9]+(s|m|h)$
                       type: string
                     name:
                       description: Name of the rule for logging and status identification
@@ -160,13 +196,16 @@ spec:
                     query:
                       description: |-
                         Query is the PromQL query to execute. It should return a vector or scalar.
-                        Example: rate(tetragon_events_total{event_type="execve"}[1m])
+                        Examples:
+                          - rate(tetragon_events_total{event_type="execve"}[1m])
+                          - container_memory_working_set_bytes{pod=~".*"} / container_spec_memory_limit_bytes{pod=~".*"}
+                          - rate(cilium_drop_count_total[2m])
                       type: string
                     threshold:
                       description: |-
                         Threshold value to compare against the query result
                         We use string to avoid float precision issues and allow parsing in controller
-                        Example: "50", "0.5"
+                        Example: "50", "0.5", "100.0"
                       type: string
                   required:
                   - name
@@ -174,6 +213,7 @@ spec:
                   - query
                   - threshold
                   type: object
+                minItems: 1
                 type: array
             required:
             - pipeline
@@ -183,6 +223,67 @@ spec:
           status:
             description: SelfHealingPolicyStatus defines the observed state of SelfHealingPolicy
             properties:
+              conditions:
+                description: Conditions represent the latest available observations
+                  of the policy's state
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               currentPipelineStep:
                 description: CurrentPipelineStep indicates which step is currently
                   running (if Phase is Healing)
@@ -191,8 +292,18 @@ spec:
                 description: LastExecutionTime is when the pipeline last ran
                 format: date-time
                 type: string
+              observedGeneration:
+                description: ObservedGeneration reflects the generation of the most
+                  recently observed SelfHealingPolicy
+                format: int64
+                type: integer
               phase:
-                description: Phase describes the current state of the policy
+                description: |-
+                  Phase describes the current state of the policy
+                  - Healthy: Monitoring active, no issues detected
+                  - Detecting: Condition met but waiting for "For" duration
+                  - Healing: Currently executing recovery pipeline
+                  - Cooldown: Waiting for cooldown period to expire
                 enum:
                 - Healthy
                 - Detecting

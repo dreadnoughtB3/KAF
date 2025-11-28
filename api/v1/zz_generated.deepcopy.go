@@ -21,6 +21,7 @@ limitations under the License.
 package v1
 
 import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -139,6 +140,13 @@ func (in *SelfHealingPolicyStatus) DeepCopyInto(out *SelfHealingPolicyStatus) {
 	if in.LastExecutionTime != nil {
 		in, out := &in.LastExecutionTime, &out.LastExecutionTime
 		*out = (*in).DeepCopy()
+	}
+	if in.Conditions != nil {
+		in, out := &in.Conditions, &out.Conditions
+		*out = make([]metav1.Condition, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
 	}
 }
 

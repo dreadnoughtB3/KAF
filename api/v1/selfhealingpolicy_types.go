@@ -26,7 +26,10 @@ type TriggerRule struct {
 	Name string `json:"name"`
 
 	// Query is the PromQL query to execute. It should return a vector or scalar.
-	// Example: rate(tetragon_events_total{event_type="execve"}[1m])
+	// Examples:
+	//   - rate(tetragon_events_total{event_type="execve"}[1m])
+	//   - container_memory_working_set_bytes{pod=~".*"} / container_spec_memory_limit_bytes{pod=~".*"}
+	//   - rate(cilium_drop_count_total[2m])
 	Query string `json:"query"`
 
 	// Operator for comparison
@@ -35,11 +38,14 @@ type TriggerRule struct {
 
 	// Threshold value to compare against the query result
 	// We use string to avoid float precision issues and allow parsing in controller
-	// Example: "50", "0.5"
+	// Example: "50", "0.5", "100.0"
 	Threshold string `json:"threshold"`
 
 	// For specifies how long the condition must be true before triggering
-	// Example: "1m", "30s"
+	// This prevents flapping and false positives from temporary spikes
+	// Example: "1m", "30s", "2m"
+	// +kubebuilder:validation:Pattern="^[0-9]+(s|m|h)$"
+	// +optional
 	For string `json:"for,omitempty"`
 }
 
@@ -49,58 +55,106 @@ type RecoveryStep struct {
 	Name string `json:"name"`
 
 	// Action type to perform
-	// +kubebuilder:validation:Enum="DeletePod";"CordonNode";"DrainNode";"RollbackDeployment";"Command"
+	// Available actions:
+	//   - DeletePod: Delete the affected pod (ReplicaSet will recreate it)
+	//   - CordonNode: Mark the node as unschedulable
+	//   - RollingRestart: Trigger a rolling restart of the deployment
+	// +kubebuilder:validation:Enum="DeletePod";"CordonNode";"RollingRestart"
 	Action string `json:"action"`
 
 	// Params are optional parameters for the action
-	// Example: {"force": "true", "gracePeriod": "0"}
+	// For DeletePod:
+	//   - gracePeriod: Grace period in seconds (default: 0 for immediate deletion)
+	// Example: {"gracePeriod": "30"}
+	// +optional
 	Params map[string]string `json:"params,omitempty"`
 }
 
 // SelfHealingPolicySpec defines the desired state of SelfHealingPolicy
 type SelfHealingPolicySpec struct {
 	// Target selects the pods to be monitored and healed
+	// Uses standard Kubernetes label selector syntax
+	// Example:
+	//   matchLabels:
+	//     app: frontend
 	Target metav1.LabelSelector `json:"target"`
 
 	// CheckInterval determines how often to query Prometheus
 	// Default: "15s"
 	// +kubebuilder:default="15s"
+	// +kubebuilder:validation:Pattern="^[0-9]+(s|m|h)$"
+	// +optional
 	CheckInterval string `json:"checkInterval,omitempty"`
 
 	// TriggerLogic determines how multiple triggers are combined
+	// - OR: Any trigger matching will activate healing (default)
+	// - AND: All triggers must match to activate healing
 	// +kubebuilder:validation:Enum="OR";"AND"
 	// +kubebuilder:default="OR"
+	// +optional
 	TriggerLogic string `json:"triggerLogic,omitempty"`
 
 	// Triggers is a list of conditions that activate the healing pipeline
+	// At least one trigger must be defined
+	// +kubebuilder:validation:MinItems=1
 	Triggers []TriggerRule `json:"triggers"`
 
 	// Pipeline is the ordered list of recovery actions
+	// Actions are executed sequentially
+	// +kubebuilder:validation:MinItems=1
 	Pipeline []RecoveryStep `json:"pipeline"`
 
-	// CooldownPeriod is the time to wait after a healing pipeline execution before resuming monitoring
+	// CooldownPeriod is the time to wait after a healing pipeline execution
+	// before resuming monitoring. This prevents healing loops.
+	// Default: "5m"
 	// +kubebuilder:default="5m"
+	// +kubebuilder:validation:Pattern="^[0-9]+(s|m|h)$"
+	// +optional
 	CooldownPeriod string `json:"cooldownPeriod,omitempty"`
 }
 
 // SelfHealingPolicyStatus defines the observed state of SelfHealingPolicy
 type SelfHealingPolicyStatus struct {
 	// LastExecutionTime is when the pipeline last ran
+	// +optional
 	LastExecutionTime *metav1.Time `json:"lastExecutionTime,omitempty"`
 
 	// Phase describes the current state of the policy
+	// - Healthy: Monitoring active, no issues detected
+	// - Detecting: Condition met but waiting for "For" duration
+	// - Healing: Currently executing recovery pipeline
+	// - Cooldown: Waiting for cooldown period to expire
 	// +kubebuilder:validation:Enum="Healthy";"Detecting";"Healing";"Cooldown"
+	// +optional
 	Phase string `json:"phase,omitempty"`
 
 	// CurrentPipelineStep indicates which step is currently running (if Phase is Healing)
+	// +optional
 	CurrentPipelineStep string `json:"currentPipelineStep,omitempty"`
 
 	// TriggeredRule records which rule caused the healing
+	// +optional
 	TriggeredRule string `json:"triggeredRule,omitempty"`
+
+	// ObservedGeneration reflects the generation of the most recently observed SelfHealingPolicy
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// Conditions represent the latest available observations of the policy's state
+	// +optional
+	// +patchMergeKey=type
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 }
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
+//+kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+//+kubebuilder:printcolumn:name="Triggered Rule",type=string,JSONPath=`.status.triggeredRule`
+//+kubebuilder:printcolumn:name="Last Execution",type=date,JSONPath=`.status.lastExecutionTime`
+//+kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // SelfHealingPolicy is the Schema for the selfhealingpolicies API
 type SelfHealingPolicy struct {

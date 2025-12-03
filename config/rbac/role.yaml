@@ -43,7 +43,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - healing.research.io
+  - healing.kaf.io
   resources:
   - selfhealingpolicies
   verbs:
@@ -55,7 +55,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - healing.research.io
+  - healing.kaf.io
   resources:
   - selfhealingpolicies/status
   verbs:

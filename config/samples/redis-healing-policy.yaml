@@ -1,0 +1,22 @@
+apiVersion: healing.kaf.io/v1
+kind: SelfHealingPolicy
+metadata:
+  name: redis-storage-failure-recovery
+  namespace: online-boutique
+spec:
+  target:
+    matchLabels:
+      app: redis-cart
+  checkInterval: "5s"
+  cooldownPeriod: "2m"
+
+  triggers:
+    - name: "detect-storage-exhaustion"
+      query: 'sum(increase(tetragon_policy_events_total{policy="detect-redis-enospc"}[2m]))'
+      operator: ">"
+      threshold: "0"
+      for: "15s"
+
+  pipeline:
+    - name: "recreate-pod-to-clear-storage"
+      action: "DeletePod"
